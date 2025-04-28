@@ -38,6 +38,15 @@ class FetchUserArg(BaseModel):
 
 
 def validate_app_token(view: Optional[Callable] = None, *, fetch_user_arg: Optional[FetchUserArg] = None):
+    """
+    验证应用Token的装饰器
+    1. 验证API Token有效性
+    2. 检查应用状态
+    3. 可选地获取并处理终端用户信息
+
+    :param view: 被装饰的视图函数
+    :param fetch_user_arg: 获取用户参数的配置
+    """
     def decorator(view_func):
         @wraps(view_func)
         def decorated_view(*args, **kwargs):

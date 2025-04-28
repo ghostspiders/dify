@@ -11,61 +11,71 @@ from dify_app import DifyApp
 
 class RedisClientWrapper:
     """
-    A wrapper class for the Redis client that addresses the issue where the global
-    `redis_client` variable cannot be updated when a new Redis instance is returned
-    by Sentinel.
+    Redis客户端包装类，解决当Sentinel返回新的Redis实例时，
+    全局`redis_client`变量无法更新的问题。
 
-    This class allows for deferred initialization of the Redis client, enabling the
-    client to be re-initialized with a new instance when necessary. This is particularly
-    useful in scenarios where the Redis instance may change dynamically, such as during
-    a failover in a Sentinel-managed Redis setup.
+    该类支持延迟初始化Redis客户端，允许在必要时重新初始化新的Redis实例。
+    这在Redis实例可能动态变化的场景中特别有用，例如在Sentinel管理的Redis设置中发生故障转移时。
 
-    Attributes:
-        _client (redis.Redis): The actual Redis client instance. It remains None until
-                               initialized with the `initialize` method.
+    属性:
+        _client (redis.Redis): 实际的Redis客户端实例。在调用`initialize`方法前保持为None。
 
-    Methods:
-        initialize(client): Initializes the Redis client if it hasn't been initialized already.
-        __getattr__(item): Delegates attribute access to the Redis client, raising an error
-                           if the client is not initialized.
+    方法:
+        initialize(client): 如果Redis客户端尚未初始化，则进行初始化
+        __getattr__(item): 将属性访问委托给Redis客户端，如果客户端未初始化则抛出错误
     """
 
     def __init__(self):
-        self._client = None
+        """初始化Redis客户端包装器"""
+        self._client = None  # 实际的Redis客户端实例
 
     def initialize(self, client):
+        """初始化Redis客户端"""
         if self._client is None:
             self._client = client
 
     def __getattr__(self, item):
+        """委托所有属性/方法访问到实际的Redis客户端"""
         if self._client is None:
-            raise RuntimeError("Redis client is not initialized. Call init_app first.")
+            raise RuntimeError("Redis客户端未初始化，请先调用init_app")
         return getattr(self._client, item)
 
 
+# 全局Redis客户端实例
 redis_client = RedisClientWrapper()
 
 
 def init_app(app: DifyApp):
+    """初始化Redis连接"""
     global redis_client
+
+    # 1. 确定连接类(普通连接或SSL连接)
     connection_class: type[Union[Connection, SSLConnection]] = Connection
     if dify_config.REDIS_USE_SSL:
         connection_class = SSLConnection
 
+    # 2. 准备基本Redis连接参数
     redis_params: dict[str, Any] = {
         "username": dify_config.REDIS_USERNAME,
-        "password": dify_config.REDIS_PASSWORD or None,  # Temporary fix for empty password
+        "password": dify_config.REDIS_PASSWORD or None,  # 空密码的临时解决方案
         "db": dify_config.REDIS_DB,
         "encoding": "utf-8",
         "encoding_errors": "strict",
-        "decode_responses": False,
+        "decode_responses": False,  # 保持原始字节数据
     }
 
+    # 3. 根据配置选择Redis连接模式
     if dify_config.REDIS_USE_SENTINEL:
-        assert dify_config.REDIS_SENTINELS is not None, "REDIS_SENTINELS must be set when REDIS_USE_SENTINEL is True"
+        # 哨兵模式配置
+        assert dify_config.REDIS_SENTINELS is not None, "启用哨兵模式必须设置REDIS_SENTINELS"
+
+        # 解析哨兵节点配置
         sentinel_hosts = [
-            (node.split(":")[0], int(node.split(":")[1])) for node in dify_config.REDIS_SENTINELS.split(",")
+            (node.split(":")[0], int(node.split(":")[1]))
+            for node in dify_config.REDIS_SENTINELS.split(",")
         ]
+
+        # 创建哨兵客户端
         sentinel = Sentinel(
             sentinel_hosts,
             sentinel_kwargs={
@@ -74,25 +84,38 @@ def init_app(app: DifyApp):
                 "password": dify_config.REDIS_SENTINEL_PASSWORD,
             },
         )
+
+        # 获取主节点客户端
         master = sentinel.master_for(dify_config.REDIS_SENTINEL_SERVICE_NAME, **redis_params)
         redis_client.initialize(master)
+
     elif dify_config.REDIS_USE_CLUSTERS:
-        assert dify_config.REDIS_CLUSTERS is not None, "REDIS_CLUSTERS must be set when REDIS_USE_CLUSTERS is True"
+        # 集群模式配置
+        assert dify_config.REDIS_CLUSTERS is not None, "启用集群模式必须设置REDIS_CLUSTERS"
+
+        # 解析集群节点配置
         nodes = [
             ClusterNode(host=node.split(":")[0], port=int(node.split(":")[1]))
             for node in dify_config.REDIS_CLUSTERS.split(",")
         ]
-        # FIXME: mypy error here, try to figure out how to fix it
-        redis_client.initialize(RedisCluster(startup_nodes=nodes, password=dify_config.REDIS_CLUSTERS_PASSWORD))  # type: ignore
+
+        # 创建集群客户端(忽略mypy类型检查错误)
+        redis_client.initialize(RedisCluster(
+            startup_nodes=nodes,
+            password=dify_config.REDIS_CLUSTERS_PASSWORD
+        ))  # type: ignore
+
     else:
-        redis_params.update(
-            {
-                "host": dify_config.REDIS_HOST,
-                "port": dify_config.REDIS_PORT,
-                "connection_class": connection_class,
-            }
-        )
+        # 单节点模式配置
+        redis_params.update({
+            "host": dify_config.REDIS_HOST,
+            "port": dify_config.REDIS_PORT,
+            "connection_class": connection_class,
+        })
+
+        # 创建连接池和Redis客户端
         pool = redis.ConnectionPool(**redis_params)
         redis_client.initialize(redis.Redis(connection_pool=pool))
 
+    # 将Redis客户端注册到Flask扩展中
     app.extensions["redis"] = redis_client
