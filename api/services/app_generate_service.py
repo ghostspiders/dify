@@ -20,45 +20,53 @@ from services.workflow_service import WorkflowService
 
 
 class AppGenerateService:
+    # 系统级别的速率限制器，每天每个租户最多允许 APP_DAILY_RATE_LIMIT 次请求
     system_rate_limiter = RateLimiter("app_daily_rate_limiter", dify_config.APP_DAILY_RATE_LIMIT, 86400)
 
     @classmethod
     def generate(
-        cls,
-        app_model: App,
-        user: Union[Account, EndUser],
-        args: Mapping[str, Any],
-        invoke_from: InvokeFrom,
-        streaming: bool = True,
+            cls,
+            app_model: App,
+            user: Union[Account, EndUser],
+            args: Mapping[str, Any],
+            invoke_from: InvokeFrom,
+            streaming: bool = True,
     ):
         """
-        App Content Generate
-        :param app_model: app model
-        :param user: user
-        :param args: args
-        :param invoke_from: invoke from
-        :param streaming: streaming
-        :return:
+        应用内容生成主入口
+        :param app_model: 应用模型对象
+        :param user: 用户对象，可以是账户或终端用户
+        :param args: 调用参数字典
+        :param invoke_from: 调用来源枚举
+        :param streaming: 是否使用流式传输，默认为True
+        :return: 生成的内容事件流
         """
-        # system level rate limiter
+
+        # 系统级速率限制检查（仅在计费启用时生效）
         if dify_config.BILLING_ENABLED:
-            # check if it's free plan
+            # 获取租户的订阅信息
             limit_info = BillingService.get_info(app_model.tenant_id)
+            # 沙盒计划用户需要检查日请求限制
             if limit_info["subscription"]["plan"] == "sandbox":
                 if cls.system_rate_limiter.is_rate_limited(app_model.tenant_id):
                     raise InvokeRateLimitError(
-                        "Rate limit exceeded, please upgrade your plan "
-                        f"or your RPD was {dify_config.APP_DAILY_RATE_LIMIT} requests/day"
+                        "请求频率超限，请升级订阅计划 "
+                        f"或保持每日请求数不超过 {dify_config.APP_DAILY_RATE_LIMIT}"
                     )
+                # 通过检查后增加计数器
                 cls.system_rate_limiter.increment_rate_limit(app_model.tenant_id)
 
-        # app level rate limiter
+        # 应用级别的并发请求限制
         max_active_request = AppGenerateService._get_max_active_requests(app_model)
-        rate_limit = RateLimit(app_model.id, max_active_request)
-        request_id = RateLimit.gen_request_key()
+        rate_limit = RateLimit(app_model.id, max_active_request)  # 创建应用级限流器
+        request_id = RateLimit.gen_request_key()  # 生成唯一请求ID
+
         try:
-            request_id = rate_limit.enter(request_id)
+            request_id = rate_limit.enter(request_id)  # 进入速率限制区
+
+            # 根据应用模式选择对应的生成器
             if app_model.mode == AppMode.COMPLETION.value:
+                # 补全模式：使用Completion生成器，转换结果为事件流
                 return rate_limit.generate(
                     CompletionAppGenerator.convert_to_event_stream(
                         CompletionAppGenerator().generate(
@@ -67,7 +75,9 @@ class AppGenerateService:
                     ),
                     request_id=request_id,
                 )
+
             elif app_model.mode == AppMode.AGENT_CHAT.value or app_model.is_agent:
+                # 智能体聊天模式：使用AgentChat生成器
                 return rate_limit.generate(
                     AgentChatAppGenerator.convert_to_event_stream(
                         AgentChatAppGenerator().generate(
@@ -76,7 +86,9 @@ class AppGenerateService:
                     ),
                     request_id,
                 )
+
             elif app_model.mode == AppMode.CHAT.value:
+                # 基础聊天模式：使用Chat生成器
                 return rate_limit.generate(
                     ChatAppGenerator.convert_to_event_stream(
                         ChatAppGenerator().generate(
@@ -85,7 +97,9 @@ class AppGenerateService:
                     ),
                     request_id=request_id,
                 )
+
             elif app_model.mode == AppMode.ADVANCED_CHAT.value:
+                # 高级聊天模式：获取工作流后使用AdvancedChat生成器
                 workflow = cls._get_workflow(app_model, invoke_from)
                 return rate_limit.generate(
                     AdvancedChatAppGenerator.convert_to_event_stream(
@@ -100,7 +114,9 @@ class AppGenerateService:
                     ),
                     request_id=request_id,
                 )
+
             elif app_model.mode == AppMode.WORKFLOW.value:
+                # 工作流模式：获取工作流后使用Workflow生成器
                 workflow = cls._get_workflow(app_model, invoke_from)
                 return rate_limit.generate(
                     WorkflowAppGenerator.convert_to_event_stream(
@@ -117,104 +133,26 @@ class AppGenerateService:
                     ),
                     request_id,
                 )
+
             else:
-                raise ValueError(f"Invalid app mode {app_model.mode}")
+                # 无效的应用模式报错
+                raise ValueError(f"无效的应用模式 {app_model.mode}")
+
         except RateLimitError as e:
+            # 捕获限流错误并转换异常类型
             raise InvokeRateLimitError(str(e))
         except Exception:
+            # 其他异常发生时退出限流计数器
             rate_limit.exit(request_id)
             raise
         finally:
+            # 非流式请求处理完成后立即释放计数
             if not streaming:
                 rate_limit.exit(request_id)
 
     @staticmethod
     def _get_max_active_requests(app_model: App) -> int:
+        """获取应用允许的最大并发请求数"""
         max_active_requests = app_model.max_active_requests
-        if max_active_requests is None:
-            max_active_requests = int(dify_config.APP_MAX_ACTIVE_REQUESTS)
-        return max_active_requests
-
-    @classmethod
-    def generate_single_iteration(cls, app_model: App, user: Account, node_id: str, args: Any, streaming: bool = True):
-        if app_model.mode == AppMode.ADVANCED_CHAT.value:
-            workflow = cls._get_workflow(app_model, InvokeFrom.DEBUGGER)
-            return AdvancedChatAppGenerator.convert_to_event_stream(
-                AdvancedChatAppGenerator().single_iteration_generate(
-                    app_model=app_model, workflow=workflow, node_id=node_id, user=user, args=args, streaming=streaming
-                )
-            )
-        elif app_model.mode == AppMode.WORKFLOW.value:
-            workflow = cls._get_workflow(app_model, InvokeFrom.DEBUGGER)
-            return AdvancedChatAppGenerator.convert_to_event_stream(
-                WorkflowAppGenerator().single_iteration_generate(
-                    app_model=app_model, workflow=workflow, node_id=node_id, user=user, args=args, streaming=streaming
-                )
-            )
-        else:
-            raise ValueError(f"Invalid app mode {app_model.mode}")
-
-    @classmethod
-    def generate_single_loop(cls, app_model: App, user: Account, node_id: str, args: Any, streaming: bool = True):
-        if app_model.mode == AppMode.ADVANCED_CHAT.value:
-            workflow = cls._get_workflow(app_model, InvokeFrom.DEBUGGER)
-            return AdvancedChatAppGenerator.convert_to_event_stream(
-                AdvancedChatAppGenerator().single_loop_generate(
-                    app_model=app_model, workflow=workflow, node_id=node_id, user=user, args=args, streaming=streaming
-                )
-            )
-        elif app_model.mode == AppMode.WORKFLOW.value:
-            workflow = cls._get_workflow(app_model, InvokeFrom.DEBUGGER)
-            return AdvancedChatAppGenerator.convert_to_event_stream(
-                WorkflowAppGenerator().single_loop_generate(
-                    app_model=app_model, workflow=workflow, node_id=node_id, user=user, args=args, streaming=streaming
-                )
-            )
-        else:
-            raise ValueError(f"Invalid app mode {app_model.mode}")
-
-    @classmethod
-    def generate_more_like_this(
-        cls,
-        app_model: App,
-        user: Union[Account, EndUser],
-        message_id: str,
-        invoke_from: InvokeFrom,
-        streaming: bool = True,
-    ) -> Union[Mapping, Generator]:
-        """
-        Generate more like this
-        :param app_model: app model
-        :param user: user
-        :param message_id: message id
-        :param invoke_from: invoke from
-        :param streaming: streaming
-        :return:
-        """
-        return CompletionAppGenerator().generate_more_like_this(
-            app_model=app_model, message_id=message_id, user=user, invoke_from=invoke_from, stream=streaming
-        )
-
-    @classmethod
-    def _get_workflow(cls, app_model: App, invoke_from: InvokeFrom) -> Workflow:
-        """
-        Get workflow
-        :param app_model: app model
-        :param invoke_from: invoke from
-        :return:
-        """
-        workflow_service = WorkflowService()
-        if invoke_from == InvokeFrom.DEBUGGER:
-            # fetch draft workflow by app_model
-            workflow = workflow_service.get_draft_workflow(app_model=app_model)
-
-            if not workflow:
-                raise ValueError("Workflow not initialized")
-        else:
-            # fetch published workflow by app_model
-            workflow = workflow_service.get_published_workflow(app_model=app_model)
-
-            if not workflow:
-                raise ValueError("Workflow not published")
-
-        return workflow
+        # 未配置时使用默认值10
+        return max_active_requests if max_active_requests is not None else 10
