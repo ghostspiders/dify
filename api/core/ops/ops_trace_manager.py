@@ -71,6 +71,7 @@ provider_config_map: dict[str, dict[str, Any]] = {
 
 
 class OpsTraceManager:
+    # 使用LRU缓存存储跟踪实例，最大缓存128个
     ops_trace_instances_cache: LRUCache = LRUCache(maxsize=128)
 
     @classmethod
@@ -78,14 +79,14 @@ class OpsTraceManager:
         cls, tenant_id: str, tracing_provider: str, tracing_config: dict, current_trace_config=None
     ):
         """
-        Encrypt tracing config.
-        :param tenant_id: tenant id
-        :param tracing_provider: tracing provider
-        :param tracing_config: tracing config dictionary to be encrypted
-        :param current_trace_config: current tracing configuration for keeping existing values
-        :return: encrypted tracing configuration
+        加密跟踪配置
+        :param tenant_id: 租户ID
+        :param tracing_provider: 跟踪服务提供商
+        :param tracing_config: 需要加密的跟踪配置字典
+        :param current_trace_config: 当前跟踪配置，用于保留现有值
+        :return: 加密后的跟踪配置
         """
-        # Get the configuration class and the keys that require encryption
+        # 从配置映射中获取配置类、需要加密的密钥和其他密钥
         config_class, secret_keys, other_keys = (
             provider_config_map[tracing_provider]["config_class"],
             provider_config_map[tracing_provider]["secret_keys"],
@@ -93,38 +94,40 @@ class OpsTraceManager:
         )
 
         new_config = {}
-        # Encrypt necessary keys
+        # 加密必要的密钥
         for key in secret_keys:
             if key in tracing_config:
                 if "*" in tracing_config[key]:
-                    # If the key contains '*', retain the original value from the current config
+                    # 如果键值包含'*'，则从当前配置中保留原始值
                     new_config[key] = current_trace_config.get(key, tracing_config[key])
                 else:
-                    # Otherwise, encrypt the key
+                    # 否则加密该键
                     new_config[key] = encrypt_token(tenant_id, tracing_config[key])
 
         for key in other_keys:
             new_config[key] = tracing_config.get(key, "")
 
-        # Create a new instance of the config class with the new configuration
+        # 使用新配置创建配置类的新实例
         encrypted_config = config_class(**new_config)
         return encrypted_config.model_dump()
 
     @classmethod
     def decrypt_tracing_config(cls, tenant_id: str, tracing_provider: str, tracing_config: dict):
         """
-        Decrypt tracing config
-        :param tenant_id: tenant id
-        :param tracing_provider: tracing provider
-        :param tracing_config: tracing config
-        :return:
+        解密跟踪配置
+        :param tenant_id: 租户ID
+        :param tracing_provider: 跟踪服务提供商
+        :param tracing_config: 跟踪配置
+        :return: 解密后的跟踪配置
         """
+        # 从配置映射中获取配置类、需要解密的密钥和其他密钥
         config_class, secret_keys, other_keys = (
             provider_config_map[tracing_provider]["config_class"],
             provider_config_map[tracing_provider]["secret_keys"],
             provider_config_map[tracing_provider]["other_keys"],
         )
         new_config = {}
+        # 解密密钥
         for key in secret_keys:
             if key in tracing_config:
                 new_config[key] = decrypt_token(tenant_id, tracing_config[key])
@@ -137,10 +140,10 @@ class OpsTraceManager:
     @classmethod
     def obfuscated_decrypt_token(cls, tracing_provider: str, decrypt_tracing_config: dict):
         """
-        Decrypt tracing config
-        :param tracing_provider: tracing provider
-        :param decrypt_tracing_config: tracing config
-        :return:
+        模糊化解密后的令牌（用于显示）
+        :param tracing_provider: 跟踪服务提供商
+        :param decrypt_tracing_config: 解密后的跟踪配置
+        :return: 模糊化处理后的配置
         """
         config_class, secret_keys, other_keys = (
             provider_config_map[tracing_provider]["config_class"],
@@ -148,6 +151,7 @@ class OpsTraceManager:
             provider_config_map[tracing_provider]["other_keys"],
         )
         new_config = {}
+        # 对敏感密钥进行模糊化处理
         for key in secret_keys:
             if key in decrypt_tracing_config:
                 new_config[key] = obfuscated_token(decrypt_tracing_config[key])
@@ -159,11 +163,12 @@ class OpsTraceManager:
     @classmethod
     def get_decrypted_tracing_config(cls, app_id: str, tracing_provider: str):
         """
-        Get decrypted tracing config
-        :param app_id: app id
-        :param tracing_provider: tracing provider
-        :return:
+        获取解密后的跟踪配置
+        :param app_id: 应用ID
+        :param tracing_provider: 跟踪服务提供商
+        :return: 解密后的跟踪配置
         """
+        # 查询数据库获取跟踪配置
         trace_config_data: Optional[TraceAppConfig] = (
             db.session.query(TraceAppConfig)
             .filter(TraceAppConfig.app_id == app_id, TraceAppConfig.tracing_provider == tracing_provider)
@@ -173,10 +178,10 @@ class OpsTraceManager:
         if not trace_config_data:
             return None
 
-        # decrypt_token
+        # 解密令牌
         app = db.session.query(App).filter(App.id == app_id).first()
         if not app:
-            raise ValueError("App not found")
+            raise ValueError("应用未找到")
 
         tenant_id = app.tenant_id
         decrypt_tracing_config = cls.decrypt_tracing_config(
@@ -191,9 +196,9 @@ class OpsTraceManager:
         app_id: Optional[Union[UUID, str]] = None,
     ):
         """
-        Get ops trace through model config
-        :param app_id: app_id
-        :return:
+        通过模型配置获取操作跟踪实例
+        :param app_id: 应用ID
+        :return: 跟踪实例
         """
         if isinstance(app_id, UUID):
             app_id = str(app_id)
@@ -201,11 +206,13 @@ class OpsTraceManager:
         if app_id is None:
             return None
 
+        # 查询应用信息
         app: Optional[App] = db.session.query(App).filter(App.id == app_id).first()
 
         if app is None:
             return None
 
+        # 解析应用的跟踪配置
         app_ops_trace_config = json.loads(app.tracing) if app.tracing else None
         if app_ops_trace_config is None:
             return None
@@ -216,35 +223,45 @@ class OpsTraceManager:
         if tracing_provider is None or tracing_provider not in provider_config_map:
             return None
 
-        # decrypt_token
+        # 解密跟踪配置
         decrypt_trace_config = cls.get_decrypted_tracing_config(app_id, tracing_provider)
         if not decrypt_trace_config:
             return None
 
+        # 从配置映射中获取跟踪实例和配置类
         trace_instance, config_class = (
             provider_config_map[tracing_provider]["trace_instance"],
             provider_config_map[tracing_provider]["config_class"],
         )
+        # 使用解密后的配置作为缓存键
         decrypt_trace_config_key = str(decrypt_trace_config)
         tracing_instance = cls.ops_trace_instances_cache.get(decrypt_trace_config_key)
         if tracing_instance is None:
-            # create new tracing_instance and update the cache if it absent
+            # 如果缓存中没有，则创建新的跟踪实例并更新缓存
             tracing_instance = trace_instance(config_class(**decrypt_trace_config))
             cls.ops_trace_instances_cache[decrypt_trace_config_key] = tracing_instance
-            logging.info(f"new tracing_instance for app_id: {app_id}")
+            logging.info(f"为应用ID创建新的跟踪实例: {app_id}")
         return tracing_instance
 
     @classmethod
     def get_app_config_through_message_id(cls, message_id: str):
+        """
+        通过消息ID获取应用配置
+        :param message_id: 消息ID
+        :return: 应用模型配置
+        """
         app_model_config = None
+        # 查询消息数据
         message_data = db.session.query(Message).filter(Message.id == message_id).first()
         if not message_data:
             return None
         conversation_id = message_data.conversation_id
+        # 查询会话数据
         conversation_data = db.session.query(Conversation).filter(Conversation.id == conversation_id).first()
         if not conversation_data:
             return None
 
+        # 获取应用模型配置
         if conversation_data.app_model_config_id:
             app_model_config = (
                 db.session.query(AppModelConfig)
@@ -259,19 +276,21 @@ class OpsTraceManager:
     @classmethod
     def update_app_tracing_config(cls, app_id: str, enabled: bool, tracing_provider: str):
         """
-        Update app tracing config
-        :param app_id: app id
-        :param enabled: enabled
-        :param tracing_provider: tracing provider
+        更新应用跟踪配置
+        :param app_id: 应用ID
+        :param enabled: 是否启用
+        :param tracing_provider: 跟踪服务提供商
         :return:
         """
-        # auth check
+        # 验证跟踪服务提供商是否有效
         if tracing_provider not in provider_config_map and tracing_provider is not None:
-            raise ValueError(f"Invalid tracing provider: {tracing_provider}")
+            raise ValueError(f"无效的跟踪服务提供商: {tracing_provider}")
 
+        # 查询应用配置
         app_config: Optional[App] = db.session.query(App).filter(App.id == app_id).first()
         if not app_config:
-            raise ValueError("App not found")
+            raise ValueError("应用未找到")
+        # 更新跟踪配置
         app_config.tracing = json.dumps(
             {
                 "enabled": enabled,
@@ -283,13 +302,13 @@ class OpsTraceManager:
     @classmethod
     def get_app_tracing_config(cls, app_id: str):
         """
-        Get app tracing config
-        :param app_id: app id
-        :return:
+        获取应用跟踪配置
+        :param app_id: 应用ID
+        :return: 跟踪配置字典
         """
         app: Optional[App] = db.session.query(App).filter(App.id == app_id).first()
         if not app:
-            raise ValueError("App not found")
+            raise ValueError("应用未找到")
         if not app.tracing:
             return {"enabled": False, "tracing_provider": None}
         app_trace_config = json.loads(app.tracing)
@@ -298,11 +317,12 @@ class OpsTraceManager:
     @staticmethod
     def check_trace_config_is_effective(tracing_config: dict, tracing_provider: str):
         """
-        Check trace config is effective
-        :param tracing_config: tracing config
-        :param tracing_provider: tracing provider
-        :return:
+        检查跟踪配置是否有效
+        :param tracing_config: 跟踪配置
+        :param tracing_provider: 跟踪服务提供商
+        :return: 是否有效
         """
+        # 获取配置类和跟踪实例
         config_type, trace_instance = (
             provider_config_map[tracing_provider]["config_class"],
             provider_config_map[tracing_provider]["trace_instance"],
@@ -313,10 +333,10 @@ class OpsTraceManager:
     @staticmethod
     def get_trace_config_project_key(tracing_config: dict, tracing_provider: str):
         """
-        get trace config is project key
-        :param tracing_config: tracing config
-        :param tracing_provider: tracing provider
-        :return:
+        获取跟踪配置的项目密钥
+        :param tracing_config: 跟踪配置
+        :param tracing_provider: 跟踪服务提供商
+        :return: 项目密钥
         """
         config_type, trace_instance = (
             provider_config_map[tracing_provider]["config_class"],
@@ -328,10 +348,10 @@ class OpsTraceManager:
     @staticmethod
     def get_trace_config_project_url(tracing_config: dict, tracing_provider: str):
         """
-        get trace config is project key
-        :param tracing_config: tracing config
-        :param tracing_provider: tracing provider
-        :return:
+        获取跟踪配置的项目URL
+        :param tracing_config: 跟踪配置
+        :param tracing_provider: 跟踪服务提供商
+        :return: 项目URL
         """
         config_type, trace_instance = (
             provider_config_map[tracing_provider]["config_class"],
@@ -339,8 +359,6 @@ class OpsTraceManager:
         )
         tracing_config = config_type(**tracing_config)
         return trace_instance(tracing_config).get_project_url()
-
-
 class TraceTask:
     def __init__(
         self,

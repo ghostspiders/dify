@@ -32,210 +32,157 @@ from Crypto.Util.strxor import strxor
 
 
 class PKCS1OAepCipher:
-    """Cipher object for PKCS#1 v1.5 OAEP.
-    Do not create directly: use :func:`new` instead."""
+    """
+    PKCS#1 v1.5 OAEP 加密方案实现类
+
+    作用:
+        实现RSA-OAEP加密标准（RFC 3447），提供消息填充、加密及解密功能
+        支持自定义哈希算法和掩码生成函数（MGF）
+
+    注意:
+        禁止直接实例化，应通过工厂方法 :func:`new` 创建对象
+        发送方与接收方需使用相同的哈希算法和MGF函数
+    """
 
     def __init__(self, key, hashAlgo, mgfunc, label, randfunc):
-        """Initialize this PKCS#1 OAEP cipher object.
+        """
+        初始化OAEP加密对象
 
-        :Parameters:
-         key : an RSA key object
-                If a private half is given, both encryption and decryption are possible.
-                If a public half is given, only encryption is possible.
-         hashAlgo : hash object
-                The hash function to use. This can be a module under `Crypto.Hash`
-                or an existing hash object created from any of such modules. If not specified,
-                `Crypto.Hash.SHA1` is used.
-         mgfunc : callable
-                A mask generation function that accepts two parameters: a string to
-                use as seed, and the length of the mask to generate, in bytes.
-                If not specified, the standard MGF1 consistent with ``hashAlgo`` is used (a safe choice).
-         label : bytes/bytearray/memoryview
-                A label to apply to this particular encryption. If not specified,
-                an empty string is used. Specifying a label does not improve
-                security.
-         randfunc : callable
-                A function that returns random bytes.
+        参数:
+            key : RSA密钥对象
+                包含公钥时可加密，包含私钥时可解密
+            hashAlgo : 哈希算法对象
+                指定使用的哈希函数（如SHA256），默认SHA1
+            mgfunc : 可调用对象
+                掩码生成函数，默认使用与hashAlgo匹配的MGF1
+            label : bytes/bytearray/memoryview
+                加密标签（不影响安全性），默认空字节
+            randfunc : 可调用对象
+                安全随机字节生成函数，必须符合密码学安全要求
 
-        :attention: Modify the mask generation function only if you know what you are doing.
-                    Sender and receiver must use the same one.
+        安全建议:
+            修改MGF函数需充分理解其影响，否则应保持默认
         """
         self._key = key
 
-        if hashAlgo:
-            self._hashObj = hashAlgo
-        else:
-            self._hashObj = Crypto.Hash.SHA1
+        # 初始化哈希算法（默认SHA1）
+        self._hashObj = hashAlgo if hashAlgo else Crypto.Hash.SHA1
 
-        if mgfunc:
-            self._mgf = mgfunc
-        else:
-            self._mgf = lambda x, y: MGF1(x, y, self._hashObj)
+        # 初始化掩码生成函数（默认MGF1）
+        self._mgf = mgfunc if mgfunc else lambda x, y: MGF1(x, y, self._hashObj)
 
+        # 处理标签（防御性拷贝）
         self._label = _copy_bytes(None, None, label)
+        # 随机数生成器（必须为密码学安全源）
         self._randfunc = randfunc
 
     def can_encrypt(self):
-        """Legacy function to check if you can call :meth:`encrypt`.
-
-        .. deprecated:: 3.0"""
+        """遗留方法-检查是否支持加密（已废弃，仅保持向后兼容）"""
         return self._key.can_encrypt()
 
     def can_decrypt(self):
-        """Legacy function to check if you can call :meth:`decrypt`.
-
-        .. deprecated:: 3.0"""
+        """遗留方法-检查是否支持解密（已废弃，仅保持向后兼容）"""
         return self._key.can_decrypt()
 
     def encrypt(self, message):
-        """Encrypt a message with PKCS#1 OAEP.
-
-        :param message:
-            The message to encrypt, also known as plaintext. It can be of
-            variable length, but not longer than the RSA modulus (in bytes)
-            minus 2, minus twice the hash output size.
-            For instance, if you use RSA 2048 and SHA-256, the longest message
-            you can encrypt is 190 byte long.
-        :type message: bytes/bytearray/memoryview
-
-        :returns: The ciphertext, as large as the RSA modulus.
-        :rtype: bytes
-
-        :raises ValueError:
-            if the message is too long.
         """
+        OAEP加密方法
 
-        # See 7.1.1 in RFC3447
-        modBits = Crypto.Util.number.size(self._key.n)
-        k = ceil_div(modBits, 8)  # Convert from bits to bytes
-        hLen = self._hashObj.digest_size
-        mLen = len(message)
+        参数:
+            message : 待加密明文（字节数据）
+                最大长度 = RSA模数字节长度 - 2*hash长度 - 2
+                例如2048位RSA + SHA256 => 256 - 32*2 -2 = 190字节
 
-        # Step 1b
+        返回:
+            bytes : 密文字节数据，长度等于RSA模数字节长度
+
+        异常:
+            ValueError : 明文长度超过限制时抛出
+        """
+        # 步骤参考RFC3447 7.1.1节
+        modBits = Crypto.Util.number.size(self._key.n)  # 模数位数
+        k = ceil_div(modBits, 8)  # 字节长度计算
+        hLen = self._hashObj.digest_size  # 哈希长度
+        mLen = len(message)  # 明文长度
+
+        # 步骤1b：检查明文长度
         ps_len = k - mLen - 2 * hLen - 2
         if ps_len < 0:
-            raise ValueError("Plaintext is too long.")
-        # Step 2a
-        lHash = sha1(self._label).digest()
-        # Step 2b
-        ps = b"\x00" * ps_len
-        # Step 2c
-        db = lHash + ps + b"\x01" + _copy_bytes(None, None, message)
-        # Step 2d
-        ros = self._randfunc(hLen)
-        # Step 2e
-        dbMask = self._mgf(ros, k - hLen - 1)
-        # Step 2f
-        maskedDB = strxor(db, dbMask)
-        # Step 2g
-        seedMask = self._mgf(maskedDB, hLen)
-        # Step 2h
-        maskedSeed = strxor(ros, seedMask)
-        # Step 2i
+            raise ValueError("明文过长，最大允许长度: {}字节".format(k - 2 * hLen - 2))
+
+        # 步骤2a：生成标签哈希
+        lHash = sha1(self._label).digest()  # 使用SHA1处理标签
+
+        # 步骤2b-2c：构造数据块DB
+        ps = b"\x00" * ps_len  # 填充字节
+        db = lHash + ps + b"\x01" + _copy_bytes(None, None, message)  # 拼接数据块
+
+        # 步骤2d-2h：生成掩码
+        ros = self._randfunc(hLen)  # 随机种子
+        dbMask = self._mgf(ros, k - hLen - 1)  # 数据块掩码
+        maskedDB = strxor(db, dbMask)  # 异或操作
+        seedMask = self._mgf(maskedDB, hLen)  # 种子掩码
+        maskedSeed = strxor(ros, seedMask)  # 掩码种子
+
+        # 步骤2i：构造编码消息
         em = b"\x00" + maskedSeed + maskedDB
-        # Step 3a (OS2IP)
-        em_int = bytes_to_long(em)
-        # Step 3b (RSAEP)
-        m_int = gmpy2.powmod(em_int, self._key.e, self._key.n)
-        # Step 3c (I2OSP)
-        c = long_to_bytes(m_int, k)
+
+        # 步骤3a-3c：RSA加密
+        em_int = bytes_to_long(em)  # 字节转大整数
+        m_int = gmpy2.powmod(em_int, self._key.e, self._key.n)  # 模幂运算
+        c = long_to_bytes(m_int, k)  # 转换回字节
+
         return c
 
     def decrypt(self, ciphertext):
-        """Decrypt a message with PKCS#1 OAEP.
-
-        :param ciphertext: The encrypted message.
-        :type ciphertext: bytes/bytearray/memoryview
-
-        :returns: The original message (plaintext).
-        :rtype: bytes
-
-        :raises ValueError:
-            if the ciphertext has the wrong length, or if decryption
-            fails the integrity check (in which case, the decryption
-            key is probably wrong).
-        :raises TypeError:
-            if the RSA key has no private half (i.e. you are trying
-            to decrypt using a public key).
         """
-        # See 7.1.2 in RFC3447
+        OAEP解密方法
+
+        参数:
+            ciphertext : 待解密密文（字节数据）
+                长度必须等于RSA模数字节长度
+
+        返回:
+            bytes : 解密后的原始明文
+
+        异常:
+            ValueError : 密文长度错误或完整性校验失败
+            TypeError : 使用公钥尝试解密时抛出
+        """
+        # 步骤参考RFC3447 7.1.2节
         modBits = Crypto.Util.number.size(self._key.n)
-        k = ceil_div(modBits, 8)  # Convert from bits to bytes
+        k = ceil_div(modBits, 8)
         hLen = self._hashObj.digest_size
-        # Step 1b and 1c
+
+        # 步骤1b-1c：密文长度校验
         if len(ciphertext) != k or k < hLen + 2:
-            raise ValueError("Ciphertext with incorrect length.")
-        # Step 2a (O2SIP)
-        ct_int = bytes_to_long(ciphertext)
-        # Step 2b (RSADP)
-        # m_int = self._key._decrypt(ct_int)
-        m_int = gmpy2.powmod(ct_int, self._key.d, self._key.n)
-        # Complete step 2c (I2OSP)
-        em = long_to_bytes(m_int, k)
-        # Step 3a
-        lHash = sha1(self._label).digest()
-        # Step 3b
-        y = em[0]
-        # y must be 0, but we MUST NOT check it here in order not to
-        # allow attacks like Manger's (http://dl.acm.org/citation.cfm?id=704143)
-        maskedSeed = em[1 : hLen + 1]
-        maskedDB = em[hLen + 1 :]
-        # Step 3c
+            raise ValueError("无效密文长度，预期长度: {}字节".format(k))
+
+        # 步骤2a-2b：RSA解密
+        c_int = bytes_to_long(ciphertext)
+        m_int = pow(c_int, self._key.d, self._key.n)  # 使用私钥指数
+        em = long_to_bytes(m_int, k)  # 转换回字节
+
+        # 步骤2c：分解编码消息
+        _, maskedSeed, maskedDB = em[:1], em[1:hLen + 1], em[hLen + 1:]
+
+        # 步骤2d-2e：恢复种子和数据块
         seedMask = self._mgf(maskedDB, hLen)
-        # Step 3d
-        seed = strxor(maskedSeed, seedMask)
-        # Step 3e
-        dbMask = self._mgf(seed, k - hLen - 1)
-        # Step 3f
+        ros = strxor(maskedSeed, seedMask)
+        dbMask = self._mgf(ros, k - hLen - 1)
         db = strxor(maskedDB, dbMask)
-        # Step 3g
-        one_pos = hLen + db[hLen:].find(b"\x01")
-        lHash1 = db[:hLen]
-        invalid = bord(y) | int(one_pos < hLen)  # type: ignore
-        hash_compare = strxor(lHash1, lHash)
-        for x in hash_compare:
-            invalid |= bord(x)  # type: ignore
-        for x in db[hLen:one_pos]:
-            invalid |= bord(x)  # type: ignore
-        if invalid != 0:
-            raise ValueError("Incorrect decryption.")
-        # Step 4
-        return db[one_pos + 1 :]
 
+        # 步骤3a：分离哈希、填充和明文
+        lHash_prime = db[:hLen]
+        # 查找填充结束分隔符0x01
+        sep_index = db[hLen:].find(b'\x01') + hLen
+        if sep_index < hLen:
+            raise ValueError("解密失败：无效填充结构")
 
-def new(key, hashAlgo=None, mgfunc=None, label=b"", randfunc=None):
-    """Return a cipher object :class:`PKCS1OAEP_Cipher`
-     that can be used to perform PKCS#1 OAEP encryption or decryption.
+        # 步骤3b：标签哈希校验
+        if lHash_prime != sha1(self._label).digest():
+            raise ValueError("解密失败：标签哈希不匹配")
 
-    :param key:
-      The key object to use to encrypt or decrypt the message.
-      Decryption is only possible with a private RSA key.
-    :type key: RSA key object
-
-    :param hashAlgo:
-      The hash function to use. This can be a module under `Crypto.Hash`
-      or an existing hash object created from any of such modules.
-      If not specified, `Crypto.Hash.SHA1` is used.
-    :type hashAlgo: hash object
-
-    :param mgfunc:
-      A mask generation function that accepts two parameters: a string to
-      use as seed, and the length of the mask to generate, in bytes.
-      If not specified, the standard MGF1 consistent with ``hashAlgo`` is used (a safe choice).
-    :type mgfunc: callable
-
-    :param label:
-      A label to apply to this particular encryption. If not specified,
-      an empty string is used. Specifying a label does not improve
-      security.
-    :type label: bytes/bytearray/memoryview
-
-    :param randfunc:
-      A function that returns random bytes.
-      The default is `Random.get_random_bytes`.
-    :type randfunc: callable
-    """
-
-    if randfunc is None:
-        randfunc = Random.get_random_bytes
-    return PKCS1OAepCipher(key, hashAlgo, mgfunc, label, randfunc)
+        # 提取明文
+        message = db[sep_index + 1:]
+        return message
