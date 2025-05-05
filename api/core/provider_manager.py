@@ -264,59 +264,64 @@ class ProviderManager:
 
     def get_default_model(self, tenant_id: str, model_type: ModelType) -> Optional[DefaultModelEntity]:
         """
-        Get default model.
+        获取指定租户和模型类型的默认模型配置。
+        如果不存在默认配置，则从可用模型中自动选择并创建一条记录（优先选择gpt-4，否则选第一个可用模型）。
 
-        :param tenant_id: workspace id
-        :param model_type: model type
-        :return:
+        :param tenant_id: 租户/工作区ID
+        :param model_type: 模型类型（如文本生成、Embedding等）
+        :return: DefaultModelEntity 或 None（无可用模型时）
         """
-        # Get the corresponding TenantDefaultModel record
+        # 1. 查询数据库，获取该租户和模型类型的默认模型记录
         default_model = (
             db.session.query(TenantDefaultModel)
             .filter(
                 TenantDefaultModel.tenant_id == tenant_id,
-                TenantDefaultModel.model_type == model_type.to_origin_model_type(),
+                TenantDefaultModel.model_type == model_type.to_origin_model_type(),  # 转换为数据库存储的模型类型
             )
             .first()
         )
 
-        # If it does not exist, get the first available provider model from get_configurations
-        # and update the TenantDefaultModel record
+        # 2. 如果不存在默认记录，尝试从提供商配置中获取可用模型并创建默认记录
         if not default_model:
-            # Get provider configurations
+            # 获取该租户的所有模型提供商配置
             provider_configurations = self.get_configurations(tenant_id)
 
-            # get available models from provider_configurations
+            # 从配置中筛选指定类型且状态为活跃的模型列表
             available_models = provider_configurations.get_models(model_type=model_type, only_active=True)
 
             if available_models:
+                # 优先选择模型名为 "gpt-4" 的模型，否则使用第一个可用模型
                 available_model = next(
                     (model for model in available_models if model.model == "gpt-4"), available_models[0]
                 )
 
+                # 创建新的默认模型记录
                 default_model = TenantDefaultModel()
                 default_model.tenant_id = tenant_id
                 default_model.model_type = model_type.to_origin_model_type()
-                default_model.provider_name = available_model.provider.provider
-                default_model.model_name = available_model.model
+                default_model.provider_name = available_model.provider.provider  # 提供商名称（如openai）
+                default_model.model_name = available_model.model  # 模型名称（如gpt-4）
                 db.session.add(default_model)
-                db.session.commit()
+                db.session.commit()  # 提交到数据库
 
+        # 3. 如果仍无默认模型（无可用配置），返回None
         if not default_model:
             return None
 
+        # 4. 获取默认模型对应的提供商元数据（如名称、图标等）
         model_provider_factory = ModelProviderFactory(tenant_id)
         provider_schema = model_provider_factory.get_provider_schema(provider=default_model.provider_name)
 
+        # 5. 构造返回实体对象
         return DefaultModelEntity(
-            model=default_model.model_name,
-            model_type=model_type,
+            model=default_model.model_name,  # 模型名称
+            model_type=model_type,  # 模型类型
             provider=DefaultModelProviderEntity(
-                provider=provider_schema.provider,
-                label=provider_schema.label,
-                icon_small=provider_schema.icon_small,
-                icon_large=provider_schema.icon_large,
-                supported_model_types=provider_schema.supported_model_types,
+                provider=provider_schema.provider,  # 提供商ID
+                label=provider_schema.label,  # 提供商显示名称
+                icon_small=provider_schema.icon_small,  # 小图标
+                icon_large=provider_schema.icon_large,  # 大图标
+                supported_model_types=provider_schema.supported_model_types,  # 支持的模型类型列表
             ),
         )
 

@@ -30,7 +30,7 @@ class DefaultModelApi(Resource):
         )
         args = parser.parse_args()
 
-        tenant_id = current_user.current_tenant_id
+        tenant_id =args["agent_tenant_id"]
 
         model_provider_service = ModelProviderService()
         default_model_entity = model_provider_service.get_default_model_of_model_type(

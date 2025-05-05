@@ -586,6 +586,8 @@ services:
       interval: 1s
       timeout: 3s
       retries: 60
+    ports:
+      - "5432:5432" 
 
   # The redis cache.
   redis:
@@ -600,6 +602,8 @@ services:
     command: redis-server --requirepass ${REDIS_PASSWORD:-difyai123456}
     healthcheck:
       test: [ 'CMD', 'redis-cli', 'ping' ]
+    ports:
+      - "6379:6379" 
 
   # The DifySandbox
   sandbox:
