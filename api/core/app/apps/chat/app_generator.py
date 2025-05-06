@@ -197,31 +197,32 @@ class ChatAppGenerator(MessageBasedAppGenerator):
         return ChatAppGenerateResponseConverter.convert(response=response, invoke_from=invoke_from)
 
     def _generate_worker(
-        self,
-        flask_app: Flask,
-        application_generate_entity: ChatAppGenerateEntity,
-        queue_manager: AppQueueManager,
-        conversation_id: str,
-        message_id: str,
+            self,
+            flask_app: Flask,
+            application_generate_entity: ChatAppGenerateEntity,
+            queue_manager: AppQueueManager,
+            conversation_id: str,
+            message_id: str,
     ) -> None:
         """
-        Generate worker in a new thread.
-        :param flask_app: Flask app
-        :param application_generate_entity: application generate entity
-        :param queue_manager: queue manager
-        :param conversation_id: conversation ID
-        :param message_id: message ID
-        :return:
+        在新线程中生成工作器（worker）
+
+        :param flask_app: Flask应用实例
+        :param application_generate_entity: 聊天应用生成实体，包含生成所需的各种参数
+        :param queue_manager: 队列管理器，用于管理消息队列
+        :param conversation_id: 会话ID，标识当前对话
+        :param message_id: 消息ID，标识当前消息
+        :return: None
         """
-        with flask_app.app_context():
+        with flask_app.app_context():  # 确保在Flask应用上下文中执行
             try:
-                # get conversation and message
+                # 获取会话和消息
                 conversation = self._get_conversation(conversation_id)
                 message = self._get_message(message_id)
                 if message is None:
-                    raise MessageNotExistsError("Message not exists")
+                    raise MessageNotExistsError("消息不存在")
 
-                # chatbot app
+                # 创建聊天应用运行器并执行
                 runner = ChatAppRunner()
                 runner.run(
                     application_generate_entity=application_generate_entity,
@@ -229,21 +230,22 @@ class ChatAppGenerator(MessageBasedAppGenerator):
                     conversation=conversation,
                     message=message,
                 )
-            except GenerateTaskStoppedError:
+            except GenerateTaskStoppedError:  # 生成任务被停止
                 pass
-            except InvokeAuthorizationError:
+            except InvokeAuthorizationError:  # 调用授权错误（如API key错误）
                 queue_manager.publish_error(
-                    InvokeAuthorizationError("Incorrect API key provided"), PublishFrom.APPLICATION_MANAGER
+                    InvokeAuthorizationError("提供的API key不正确"),
+                    PublishFrom.APPLICATION_MANAGER
                 )
-            except ValidationError as e:
-                logger.exception("Validation Error when generating")
+            except ValidationError as e:  # 数据验证错误
+                logger.exception("生成时出现验证错误")
                 queue_manager.publish_error(e, PublishFrom.APPLICATION_MANAGER)
-            except ValueError as e:
-                if dify_config.DEBUG:
-                    logger.exception("Error when generating")
+            except ValueError as e:  # 数值错误
+                if dify_config.DEBUG:  # 调试模式下记录详细错误
+                    logger.exception("生成时出现错误")
                 queue_manager.publish_error(e, PublishFrom.APPLICATION_MANAGER)
-            except Exception as e:
-                logger.exception("Unknown Error when generating")
+            except Exception as e:  # 其他未知错误
+                logger.exception("生成时出现未知错误")
                 queue_manager.publish_error(e, PublishFrom.APPLICATION_MANAGER)
             finally:
-                db.session.close()
+                db.session.close()  # 确保数据库会话被关闭

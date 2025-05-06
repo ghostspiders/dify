@@ -65,64 +65,98 @@ logger = logging.getLogger(__name__)
 
 class EasyUIBasedGenerateTaskPipeline(BasedGenerateTaskPipeline, MessageCycleManage):
     """
-    EasyUIBasedGenerateTaskPipeline is a class that generate stream output and state management for Application.
+    EasyUI 基础的生成任务管道类，用于为应用程序生成流式输出并管理状态。
+    继承自 BasedGenerateTaskPipeline 和 MessageCycleManage，兼具任务处理和消息周期管理功能。
     """
 
-    _task_state: EasyUITaskState
-    _application_generate_entity: Union[ChatAppGenerateEntity, CompletionAppGenerateEntity, AgentChatAppGenerateEntity]
+    _task_state: EasyUITaskState  # 任务状态对象，保存当前任务的各种状态信息
+    _application_generate_entity: Union[
+        ChatAppGenerateEntity, CompletionAppGenerateEntity, AgentChatAppGenerateEntity]  # 应用生成实体，可能是聊天/补全/智能体等不同类型
 
     def __init__(
-        self,
-        application_generate_entity: Union[
-            ChatAppGenerateEntity, CompletionAppGenerateEntity, AgentChatAppGenerateEntity
-        ],
-        queue_manager: AppQueueManager,
-        conversation: Conversation,
-        message: Message,
-        stream: bool,
+            self,
+            application_generate_entity: Union[
+                ChatAppGenerateEntity, CompletionAppGenerateEntity, AgentChatAppGenerateEntity
+            ],
+            queue_manager: AppQueueManager,
+            conversation: Conversation,
+            message: Message,
+            stream: bool,
     ) -> None:
+        """
+        初始化 EasyUI 生成任务管道
+
+        :param application_generate_entity: 应用生成实体，包含生成所需的各种参数
+        :param queue_manager: 队列管理器，用于任务队列管理
+        :param conversation: 当前会话对象
+        :param message: 当前消息对象
+        :param stream: 是否使用流式输出模式
+        """
+        # 调用父类初始化
         super().__init__(
             application_generate_entity=application_generate_entity,
             queue_manager=queue_manager,
             stream=stream,
         )
-        self._model_config = application_generate_entity.model_conf
-        self._app_config = application_generate_entity.app_config
 
-        self._conversation_id = conversation.id
-        self._conversation_mode = conversation.mode
+        # 从生成实体中获取模型配置和应用配置
+        self._model_config = application_generate_entity.model_conf  # 模型配置对象
+        self._app_config = application_generate_entity.app_config  # 应用配置对象
 
-        self._message_id = message.id
-        self._message_created_at = int(message.created_at.timestamp())
+        # 会话相关属性
+        self._conversation_id = conversation.id  # 当前会话ID
+        self._conversation_mode = conversation.mode  # 会话模式
 
+        # 消息相关属性
+        self._message_id = message.id  # 当前消息ID
+        self._message_created_at = int(message.created_at.timestamp())  # 消息创建时间戳
+
+        # 初始化任务状态
         self._task_state = EasyUITaskState(
             llm_result=LLMResult(
-                model=self._model_config.model,
-                prompt_messages=[],
-                message=AssistantPromptMessage(content=""),
-                usage=LLMUsage.empty_usage(),
+                model=self._model_config.model,  # 模型名称
+                prompt_messages=[],  # 提示消息列表（初始为空）
+                message=AssistantPromptMessage(content=""),  # 助手消息（初始为空内容）
+                usage=LLMUsage.empty_usage(),  # 使用量统计（初始化为空）
             )
         )
 
+        # 会话名称生成线程（初始为None，表示未启动）
         self._conversation_name_generate_thread: Optional[Thread] = None
 
     def process(
-        self,
+            self,
     ) -> Union[
-        ChatbotAppBlockingResponse,
-        CompletionAppBlockingResponse,
-        Generator[Union[ChatbotAppStreamResponse, CompletionAppStreamResponse], None, None],
+        ChatbotAppBlockingResponse,  # 聊天应用阻塞式响应
+        CompletionAppBlockingResponse,  # 补全应用阻塞式响应
+        Generator[Union[ChatbotAppStreamResponse, CompletionAppStreamResponse], None, None],  # 流式响应生成器
     ]:
+        """
+        处理生成任务的核心方法，根据配置返回阻塞式或流式响应
+
+        返回类型:
+            - 流式模式: 返回响应生成器
+            - 阻塞模式: 返回完整的响应对象
+        """
+
+        # 如果不是补全模式(COMPLETION)，则启动会话名称生成线程
         if self._application_generate_entity.app_config.app_mode != AppMode.COMPLETION:
-            # start generate conversation name thread
             self._conversation_name_generate_thread = self._generate_conversation_name(
-                conversation_id=self._conversation_id, query=self._application_generate_entity.query or ""
+                conversation_id=self._conversation_id,  # 当前会话ID
+                query=self._application_generate_entity.query or ""  # 用户查询内容(为空时使用空字符串)
             )
 
-        generator = self._wrapper_process_stream_response(trace_manager=self._application_generate_entity.trace_manager)
+        # 包装处理流式响应，传入追踪管理器
+        generator = self._wrapper_process_stream_response(
+            trace_manager=self._application_generate_entity.trace_manager
+        )
+
+        # 根据流式标志决定返回类型
         if self._stream:
+            # 流式模式 - 返回流式响应生成器
             return self._to_stream_response(generator)
         else:
+            # 阻塞模式 - 返回完整响应对象
             return self._to_blocking_response(generator)
 
     def _to_blocking_response(

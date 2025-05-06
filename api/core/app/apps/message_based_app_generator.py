@@ -35,50 +35,53 @@ logger = logging.getLogger(__name__)
 
 class MessageBasedAppGenerator(BaseAppGenerator):
     def _handle_response(
-        self,
-        application_generate_entity: Union[
-            ChatAppGenerateEntity,
-            CompletionAppGenerateEntity,
-            AgentChatAppGenerateEntity,
-        ],
-        queue_manager: AppQueueManager,
-        conversation: Conversation,
-        message: Message,
-        user: Union[Account, EndUser],
-        stream: bool = False,
+            self,
+            application_generate_entity: Union[
+                ChatAppGenerateEntity,
+                CompletionAppGenerateEntity,
+                AgentChatAppGenerateEntity,
+            ],
+            queue_manager: AppQueueManager,
+            conversation: Conversation,
+            message: Message,
+            user: Union[Account, EndUser],
+            stream: bool = False,
     ) -> Union[
         ChatbotAppBlockingResponse,
         CompletionAppBlockingResponse,
         Generator[Union[ChatbotAppStreamResponse, CompletionAppStreamResponse], None, None],
     ]:
         """
-        Handle response.
-        :param application_generate_entity: application generate entity
-        :param queue_manager: queue manager
-        :param conversation: conversation
-        :param message: message
-        :param user: user
-        :param stream: is stream
-        :return:
+        处理生成任务的响应结果
+
+        :param application_generate_entity: 应用生成实体，可能是聊天/补全/智能体等不同类型
+        :param queue_manager: 队列管理器，用于任务队列管理
+        :param conversation: 当前会话对象
+        :param message: 当前消息对象
+        :param user: 用户对象，可能是账户或终端用户
+        :param stream: 是否使用流式响应模式
+        :return: 返回可能是阻塞式响应、流式响应生成器
         """
-        # init generate task pipeline
+        # 初始化基于EasyUI的生成任务管道
         generate_task_pipeline = EasyUIBasedGenerateTaskPipeline(
             application_generate_entity=application_generate_entity,
             queue_manager=queue_manager,
             conversation=conversation,
             message=message,
-            stream=stream,
+            stream=stream,  # 是否流式输出
         )
 
         try:
+            # 执行生成任务处理流程
             return generate_task_pipeline.process()
         except ValueError as e:
-            if len(e.args) > 0 and e.args[0] == "I/O operation on closed file.":  # ignore this error
+            if len(e.args) > 0 and e.args[0] == "I/O operation on closed file.":
+                # 忽略文件已关闭的IO错误（通常是客户端中断连接导致）
                 raise GenerateTaskStoppedError()
             else:
-                logger.exception(f"Failed to handle response, conversation_id: {conversation.id}")
+                # 记录其他值错误日志（包含会话ID便于追踪）
+                logger.exception(f"处理响应失败, conversation_id: {conversation.id}")
                 raise e
-
     def _get_app_model_config(self, app_model: App, conversation: Optional[Conversation] = None) -> AppModelConfig:
         if conversation:
             app_model_config = (
